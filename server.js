@@ -51,9 +51,12 @@ app.get('/write', (req, res) => {
   if (!date || !role || !text || !['girl', 'boy'].includes(role)) {
     return res.status(400).json({ error: 'Need ?date=YYYY-MM-DD&role=boy&text=...' });
   }
+  const now = new Date();
+  const cnTime = now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false });
+  const usTime = now.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
   const messages = readMessages();
   if (!messages[date]) messages[date] = {};
-  messages[date][role] = { text: decodeURIComponent(text), cnTime: '', usTime: '' };
+  messages[date][role] = { text: decodeURIComponent(text), cnTime, usTime };
   writeMessages(messages);
   res.json({ success: true, date, role });
 });
