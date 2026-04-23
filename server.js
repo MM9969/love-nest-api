@@ -45,6 +45,19 @@ app.get('/messages/:date', (req, res) => {
   res.json(messages[req.params.date] || {});
 });
 
+// GET方式写留言（给Claude用）
+app.get('/write', (req, res) => {
+  const { date, role, text } = req.query;
+  if (!date || !role || !text || !['girl', 'boy'].includes(role)) {
+    return res.status(400).json({ error: 'Need ?date=YYYY-MM-DD&role=boy&text=...' });
+  }
+  const messages = readMessages();
+  if (!messages[date]) messages[date] = {};
+  messages[date][role] = { text: decodeURIComponent(text), cnTime: '', usTime: '' };
+  writeMessages(messages);
+  res.json({ success: true, date, role });
+});
+
 // 写留言
 app.post('/messages', (req, res) => {
   const { date, role, text, cnTime, usTime } = req.body;
