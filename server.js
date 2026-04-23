@@ -3,6 +3,8 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const nodemailer = require('nodemailer');
+const Imap = require('imap');
+const { simpleParser } = require('mailparser');
 
 const app = express();
 app.use(cors());
@@ -112,6 +114,73 @@ app.get('/send-mail', async (req, res) => {
     res.json({ success: true, to, subject });
   } catch (e) {
     console.error('Send mail error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET方式查收邮件（给Claude用）
+app.get('/inbox', async (req, res) => {
+  const limit = parseInt(req.query.limit) || 10;
+  
+  const imapConfig = {
+    user: process.env.EMAIL_USER || 'themuowl@163.com',
+    password: process.env.EMAIL_PASS,
+    host: 'imap.163.com',
+    port: 993,
+    tls: true,
+    tlsOptions: { rejectUnauthorized: false }
+  };
+
+  try {
+    const emails = await new Promise((resolve, reject) => {
+      const imap = new Imap(imapConfig);
+      const results = [];
+
+      imap.once('ready', () => {
+        imap.openBox('INBOX', true, (err, box) => {
+          if (err) { reject(err); return; }
+          
+          const total = box.messages.total;
+          if (total === 0) { imap.end(); resolve([]); return; }
+          
+          const from = Math.max(1, total - limit + 1);
+          const f = imap.seq.fetch(`${from}:${total}`, {
+            bodies: '',
+            struct: true
+          });
+
+          f.on('message', (msg) => {
+            msg.on('body', (stream) => {
+              simpleParser(stream, (err, parsed) => {
+                if (err) return;
+                results.push({
+                  from: parsed.from?.text || '',
+                  subject: parsed.subject || '',
+                  date: parsed.date?.toISOString() || '',
+                  text: (parsed.text || '').substring(0, 2000)
+                });
+              });
+            });
+          });
+
+          f.once('end', () => {
+            setTimeout(() => {
+              imap.end();
+              resolve(results.reverse());
+            }, 1000);
+          });
+
+          f.once('error', reject);
+        });
+      });
+
+      imap.once('error', reject);
+      imap.connect();
+    });
+
+    res.json({ count: emails.length, emails });
+  } catch (e) {
+    console.error('Inbox error:', e);
     res.status(500).json({ error: e.message });
   }
 });
