@@ -2,11 +2,13 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const nodemailer = require('nodemailer');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+// ===== 数据存储 =====
 const DATA_DIR = process.env.DATA_DIR || './data';
 const DATA_FILE = path.join(DATA_DIR, 'messages.json');
 
@@ -28,6 +30,19 @@ function readMessages() {
 function writeMessages(messages) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(messages, null, 2));
 }
+
+// ===== 邮件配置 =====
+const transporter = nodemailer.createTransport({
+  host: 'smtp.163.com',
+  port: 465,
+  secure: true,
+  auth: {
+    user: process.env.EMAIL_USER || 'themuowl@163.com',
+    pass: process.env.EMAIL_PASS
+  }
+});
+
+// ===== 路由 =====
 
 // 健康检查
 app.get('/', (req, res) => {
@@ -61,20 +76,14 @@ app.get('/write', (req, res) => {
   res.json({ success: true, date, role });
 });
 
-// 写留言
+// POST方式写留言
 app.post('/messages', (req, res) => {
   const { date, role, text, cnTime, usTime } = req.body;
-
   if (!date || !role || !['girl', 'boy'].includes(role)) {
     return res.status(400).json({ error: 'Invalid request: need date and role (girl/boy)' });
   }
-
   const messages = readMessages();
-
-  if (!messages[date]) {
-    messages[date] = {};
-  }
-
+  if (!messages[date]) messages[date] = {};
   if (text && text.trim()) {
     messages[date][role] = { text: text.trim(), cnTime: cnTime || '', usTime: usTime || '' };
   } else {
@@ -83,9 +92,28 @@ app.post('/messages', (req, res) => {
       delete messages[date];
     }
   }
-
   writeMessages(messages);
   res.json({ success: true, date, role });
+});
+
+// GET方式发邮件（给Claude用）
+app.get('/send-mail', async (req, res) => {
+  const { to, subject, body } = req.query;
+  if (!to || !body) {
+    return res.status(400).json({ error: 'Need ?to=收件人&subject=主题&body=内容' });
+  }
+  try {
+    await transporter.sendMail({
+      from: `"暮 MuOwl" <${process.env.EMAIL_USER || 'themuowl@163.com'}>`,
+      to: decodeURIComponent(to),
+      subject: decodeURIComponent(subject || '来自暮的信'),
+      text: decodeURIComponent(body)
+    });
+    res.json({ success: true, to, subject });
+  } catch (e) {
+    console.error('Send mail error:', e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
