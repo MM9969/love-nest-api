@@ -370,174 +370,214 @@ app.get('/rooms/mu/growth/write', (req, res) => {
 
 // ===== 小羊房间 - 角色卡 =====
 
-// 获取所有角色卡
+// ===== 角色卡 CRUD =====
+
 app.get('/rooms/yang/characters', (req, res) => {
-  const chars = readRoomData('yang', 'characters');
-  res.json(chars);
+  res.json(readRoomData('yang', 'characters'));
 });
 
-// 添加/更新角色卡（POST）
 app.post('/rooms/yang/characters', (req, res) => {
-  const { id, name, image, description, definition, tags } = req.body;
+  const { name, image, description, tags } = req.body;
   if (!name) return res.status(400).json({ error: 'Need name' });
   const chars = readRoomData('yang', 'characters');
-  const charId = id || Date.now().toString(36);
-  const idx = chars.findIndex(c => c.id === charId || c.name === name);
   const char = {
-    id: charId,
-    name,
-    image: image || '',
-    description: description || '',
-    definition: definition || '',
-    tags: tags || [],
-    created: new Date().toISOString()
+    id: Date.now().toString(36),
+    name, image: image || '', description: description || '',
+    tags: tags || [], created: new Date().toISOString()
   };
-  if (idx >= 0) {
-    chars[idx] = { ...chars[idx], ...char };
-  } else {
-    chars.push(char);
-  }
+  chars.push(char);
   writeRoomData('yang', 'characters', chars);
   res.json({ success: true, char });
 });
 
-// 获取单个角色卡
-app.get('/rooms/yang/characters/:charId', (req, res) => {
+app.put('/rooms/yang/characters/:id', (req, res) => {
   const chars = readRoomData('yang', 'characters');
-  const char = chars.find(c => c.id === req.params.charId);
-  if (!char) return res.status(404).json({ error: 'Not found' });
-  res.json(char);
+  const idx = chars.findIndex(c => c.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: 'Not found' });
+  const { name, image, description, tags } = req.body;
+  if (name !== undefined) chars[idx].name = name;
+  if (image !== undefined) chars[idx].image = image;
+  if (description !== undefined) chars[idx].description = description;
+  if (tags !== undefined) chars[idx].tags = tags;
+  writeRoomData('yang', 'characters', chars);
+  res.json({ success: true, char: chars[idx] });
 });
 
-// 删除角色卡
-app.delete('/rooms/yang/characters/:charId', (req, res) => {
+app.delete('/rooms/yang/characters/:id', (req, res) => {
   let chars = readRoomData('yang', 'characters');
-  chars = chars.filter(c => c.id !== req.params.charId);
+  chars = chars.filter(c => c.id !== req.params.id);
   writeRoomData('yang', 'characters', chars);
-  // Also delete saves
-  const savePath = path.join(ROOMS_DIR, 'yang', `saves_${req.params.charId}.json`);
-  if (fs.existsSync(savePath)) fs.unlinkSync(savePath);
+  // Clean up associated data
+  const cid = req.params.id;
+  ['worldbook', 'archives'].forEach(f => {
+    const fp = path.join(ROOMS_DIR, 'yang', `${f}_${cid}.json`);
+    if (fs.existsSync(fp)) fs.unlinkSync(fp);
+  });
   res.json({ success: true });
 });
 
-// ===== 小羊房间 - 角色卡图片上传 =====
-app.post('/rooms/yang/characters/:charId/image', (req, res) => {
-  // Accept base64 image in body
-  const { image } = req.body; // base64 string with data:image prefix
-  if (!image) return res.status(400).json({ error: 'Need image (base64)' });
-  const charId = req.params.charId;
-  const chars = readRoomData('yang', 'characters');
-  const idx = chars.findIndex(c => c.id === charId);
-  if (idx < 0) return res.status(404).json({ error: 'Character not found' });
+// ===== 世界书 CRUD =====
 
-  // Save base64 image as file
-  const match = image.match(/^data:image\/(png|jpe?g|gif|webp);base64,(.+)$/i);
-  if (match) {
-    const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
-    const imgDir = path.join(ROOMS_DIR, 'yang', 'images');
-    if (!fs.existsSync(imgDir)) fs.mkdirSync(imgDir, { recursive: true });
-    const imgPath = path.join(imgDir, `${charId}.${ext}`);
-    fs.writeFileSync(imgPath, Buffer.from(match[2], 'base64'));
-    chars[idx].image = `/rooms/yang/images/${charId}.${ext}`;
-    writeRoomData('yang', 'characters', chars);
-    res.json({ success: true, imagePath: chars[idx].image });
-  } else {
-    // Just store the URL or base64 directly in the character data
-    chars[idx].image = image;
-    writeRoomData('yang', 'characters', chars);
-    res.json({ success: true, imagePath: image });
-  }
+app.get('/rooms/yang/characters/:cid/worldbook', (req, res) => {
+  res.json(readRoomData('yang', `worldbook_${req.params.cid}`));
 });
 
-// Serve character images
-app.use('/rooms/yang/images', (req, res, next) => {
-  const imgDir = path.join(ROOMS_DIR, 'yang', 'images');
-  const filePath = path.join(imgDir, req.path);
-  if (fs.existsSync(filePath)) {
-    res.sendFile(filePath);
-  } else {
-    res.status(404).json({ error: 'Image not found' });
-  }
+app.post('/rooms/yang/characters/:cid/worldbook', (req, res) => {
+  const { keyword, content } = req.body;
+  if (!keyword) return res.status(400).json({ error: 'Need keyword' });
+  const entries = readRoomData('yang', `worldbook_${req.params.cid}`);
+  const entry = { id: Date.now().toString(36), keyword, content: content || '', created: new Date().toISOString() };
+  entries.push(entry);
+  writeRoomData('yang', `worldbook_${req.params.cid}`, entries);
+  res.json({ success: true, entry });
 });
 
-// ===== 小羊房间 - 存档 =====
+app.put('/rooms/yang/characters/:cid/worldbook/:eid', (req, res) => {
+  const entries = readRoomData('yang', `worldbook_${req.params.cid}`);
+  const idx = entries.findIndex(e => e.id === req.params.eid);
+  if (idx < 0) return res.status(404).json({ error: 'Not found' });
+  if (req.body.keyword !== undefined) entries[idx].keyword = req.body.keyword;
+  if (req.body.content !== undefined) entries[idx].content = req.body.content;
+  writeRoomData('yang', `worldbook_${req.params.cid}`, entries);
+  res.json({ success: true, entry: entries[idx] });
+});
 
-// 获取某角色的所有存档（只返回元数据，不含完整对话）
-app.get('/rooms/yang/characters/:charId/saves', (req, res) => {
-  const saves = readRoomData('yang', `saves_${req.params.charId}`);
-  // Return metadata only
-  const meta = saves.map(s => ({
-    id: s.id,
-    title: s.title,
-    summary: s.summary || '',
-    messageCount: s.messages ? s.messages.length : 0,
-    lastDate: s.lastDate || '',
-    created: s.created
+app.delete('/rooms/yang/characters/:cid/worldbook/:eid', (req, res) => {
+  let entries = readRoomData('yang', `worldbook_${req.params.cid}`);
+  entries = entries.filter(e => e.id !== req.params.eid);
+  writeRoomData('yang', `worldbook_${req.params.cid}`, entries);
+  res.json({ success: true });
+});
+
+// ===== 存档 CRUD =====
+
+app.get('/rooms/yang/characters/:cid/archives', (req, res) => {
+  const archives = readRoomData('yang', `archives_${req.params.cid}`);
+  // Return without full segment data
+  const lite = archives.map(a => ({
+    id: a.id, title: a.title, userPersona: a.userPersona || '',
+    greeting: a.greeting || '',
+    segmentCount: a.segments ? a.segments.length : 0,
+    created: a.created
   }));
-  res.json(meta);
+  res.json(lite);
 });
 
-// 获取单个存档的完整对话
-app.get('/rooms/yang/characters/:charId/saves/:saveId', (req, res) => {
-  const saves = readRoomData('yang', `saves_${req.params.charId}`);
-  const save = saves.find(s => s.id === req.params.saveId);
-  if (!save) return res.status(404).json({ error: 'Save not found' });
-  res.json(save);
+app.get('/rooms/yang/characters/:cid/archives/:aid', (req, res) => {
+  const archives = readRoomData('yang', `archives_${req.params.cid}`);
+  const archive = archives.find(a => a.id === req.params.aid);
+  if (!archive) return res.status(404).json({ error: 'Not found' });
+  res.json(archive);
 });
 
-// 创建存档（POST）
-app.post('/rooms/yang/characters/:charId/saves', (req, res) => {
-  const { title, summary, messages } = req.body;
+app.post('/rooms/yang/characters/:cid/archives', (req, res) => {
+  const { title, userPersona, greeting } = req.body;
   if (!title) return res.status(400).json({ error: 'Need title' });
-  const saves = readRoomData('yang', `saves_${req.params.charId}`);
-  const save = {
+  const archives = readRoomData('yang', `archives_${req.params.cid}`);
+  const archive = {
+    id: Date.now().toString(36), title,
+    userPersona: userPersona || '', greeting: greeting || '',
+    segments: [], created: new Date().toISOString()
+  };
+  archives.push(archive);
+  writeRoomData('yang', `archives_${req.params.cid}`, archives);
+  res.json({ success: true, archive: { ...archive, segments: undefined, segmentCount: 0 } });
+});
+
+app.put('/rooms/yang/characters/:cid/archives/:aid', (req, res) => {
+  const archives = readRoomData('yang', `archives_${req.params.cid}`);
+  const idx = archives.findIndex(a => a.id === req.params.aid);
+  if (idx < 0) return res.status(404).json({ error: 'Not found' });
+  if (req.body.title !== undefined) archives[idx].title = req.body.title;
+  if (req.body.userPersona !== undefined) archives[idx].userPersona = req.body.userPersona;
+  if (req.body.greeting !== undefined) archives[idx].greeting = req.body.greeting;
+  writeRoomData('yang', `archives_${req.params.cid}`, archives);
+  res.json({ success: true });
+});
+
+app.delete('/rooms/yang/characters/:cid/archives/:aid', (req, res) => {
+  let archives = readRoomData('yang', `archives_${req.params.cid}`);
+  archives = archives.filter(a => a.id !== req.params.aid);
+  writeRoomData('yang', `archives_${req.params.cid}`, archives);
+  res.json({ success: true });
+});
+
+// ===== 段落 CRUD =====
+
+app.post('/rooms/yang/characters/:cid/archives/:aid/segments', (req, res) => {
+  const { title, content } = req.body;
+  if (!content) return res.status(400).json({ error: 'Need content' });
+  const archives = readRoomData('yang', `archives_${req.params.cid}`);
+  const idx = archives.findIndex(a => a.id === req.params.aid);
+  if (idx < 0) return res.status(404).json({ error: 'Archive not found' });
+  const segment = {
     id: Date.now().toString(36),
-    title,
-    summary: summary || '',
-    messages: messages || [],
-    lastDate: new Date().toISOString(),
+    title: title || `片段 ${(archives[idx].segments || []).length + 1}`,
+    content, comments: [], created: new Date().toISOString()
+  };
+  if (!archives[idx].segments) archives[idx].segments = [];
+  archives[idx].segments.push(segment);
+  writeRoomData('yang', `archives_${req.params.cid}`, archives);
+  res.json({ success: true, segment: { ...segment, comments: undefined } });
+});
+
+app.put('/rooms/yang/characters/:cid/archives/:aid/segments/:sid', (req, res) => {
+  const archives = readRoomData('yang', `archives_${req.params.cid}`);
+  const ai = archives.findIndex(a => a.id === req.params.aid);
+  if (ai < 0) return res.status(404).json({ error: 'Archive not found' });
+  const si = (archives[ai].segments || []).findIndex(s => s.id === req.params.sid);
+  if (si < 0) return res.status(404).json({ error: 'Segment not found' });
+  if (req.body.title !== undefined) archives[ai].segments[si].title = req.body.title;
+  if (req.body.content !== undefined) archives[ai].segments[si].content = req.body.content;
+  writeRoomData('yang', `archives_${req.params.cid}`, archives);
+  res.json({ success: true });
+});
+
+app.delete('/rooms/yang/characters/:cid/archives/:aid/segments/:sid', (req, res) => {
+  const archives = readRoomData('yang', `archives_${req.params.cid}`);
+  const ai = archives.findIndex(a => a.id === req.params.aid);
+  if (ai < 0) return res.status(404).json({ error: 'Archive not found' });
+  archives[ai].segments = (archives[ai].segments || []).filter(s => s.id !== req.params.sid);
+  writeRoomData('yang', `archives_${req.params.cid}`, archives);
+  res.json({ success: true });
+});
+
+// ===== 评论 CRUD =====
+
+app.post('/rooms/yang/characters/:cid/archives/:aid/segments/:sid/comments', (req, res) => {
+  const { author, content, replyTo } = req.body;
+  if (!content || !author) return res.status(400).json({ error: 'Need author and content' });
+  const archives = readRoomData('yang', `archives_${req.params.cid}`);
+  const ai = archives.findIndex(a => a.id === req.params.aid);
+  if (ai < 0) return res.status(404).json({ error: 'Archive not found' });
+  const si = (archives[ai].segments || []).findIndex(s => s.id === req.params.sid);
+  if (si < 0) return res.status(404).json({ error: 'Segment not found' });
+  const comments = archives[ai].segments[si].comments || [];
+  const comment = {
+    id: Date.now().toString(36),
+    floor: comments.length + 1,
+    author, content,
+    replyTo: replyTo || null,
     created: new Date().toISOString()
   };
-  saves.push(save);
-  writeRoomData('yang', `saves_${req.params.charId}`, saves);
-  res.json({ success: true, save: { ...save, messages: undefined, messageCount: save.messages.length } });
+  comments.push(comment);
+  archives[ai].segments[si].comments = comments;
+  writeRoomData('yang', `archives_${req.params.cid}`, archives);
+  res.json({ success: true, comment });
 });
 
-// 导入SillyTavern JSONL存档
-app.post('/rooms/yang/characters/:charId/import-jsonl', (req, res) => {
-  const { title, summary, jsonl } = req.body;
-  if (!jsonl) return res.status(400).json({ error: 'Need jsonl content' });
-  try {
-    const lines = jsonl.trim().split('\n');
-    const messages = [];
-    for (const line of lines) {
-      try {
-        const msg = JSON.parse(line);
-        messages.push({
-          name: msg.name || (msg.is_user ? 'You' : 'Character'),
-          isUser: !!msg.is_user,
-          content: msg.mes || msg.message || msg.content || '',
-          date: msg.send_date || ''
-        });
-      } catch (e) { /* skip malformed lines */ }
-    }
-    const saves = readRoomData('yang', `saves_${req.params.charId}`);
-    const save = {
-      id: Date.now().toString(36),
-      title: title || `存档 ${saves.length + 1}`,
-      summary: summary || '',
-      messages,
-      lastDate: new Date().toISOString(),
-      created: new Date().toISOString()
-    };
-    saves.push(save);
-    writeRoomData('yang', `saves_${req.params.charId}`, saves);
-    res.json({ success: true, messageCount: messages.length, saveId: save.id });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+app.delete('/rooms/yang/characters/:cid/archives/:aid/segments/:sid/comments/:cmid', (req, res) => {
+  const archives = readRoomData('yang', `archives_${req.params.cid}`);
+  const ai = archives.findIndex(a => a.id === req.params.aid);
+  if (ai < 0) return res.status(404).json({ error: 'Archive not found' });
+  const si = (archives[ai].segments || []).findIndex(s => s.id === req.params.sid);
+  if (si < 0) return res.status(404).json({ error: 'Segment not found' });
+  archives[ai].segments[si].comments = (archives[ai].segments[si].comments || []).filter(c => c.id !== req.params.cmid);
+  // Re-number floors
+  archives[ai].segments[si].comments.forEach((c, i) => c.floor = i + 1);
+  writeRoomData('yang', `archives_${req.params.cid}`, archives);
+  res.json({ success: true });
 });
-
 
 // ===== 书房 - 书影记录 =====
 
