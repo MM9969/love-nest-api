@@ -368,6 +368,261 @@ app.get('/rooms/mu/growth/write', (req, res) => {
   res.json({ success: true, item });
 });
 
+// ===== 小羊房间 - 角色卡 =====
+
+// 获取所有角色卡
+app.get('/rooms/yang/characters', (req, res) => {
+  const chars = readRoomData('yang', 'characters');
+  res.json(chars);
+});
+
+// 添加/更新角色卡（POST）
+app.post('/rooms/yang/characters', (req, res) => {
+  const { id, name, image, description, definition, tags } = req.body;
+  if (!name) return res.status(400).json({ error: 'Need name' });
+  const chars = readRoomData('yang', 'characters');
+  const charId = id || Date.now().toString(36);
+  const idx = chars.findIndex(c => c.id === charId || c.name === name);
+  const char = {
+    id: charId,
+    name,
+    image: image || '',
+    description: description || '',
+    definition: definition || '',
+    tags: tags || [],
+    created: new Date().toISOString()
+  };
+  if (idx >= 0) {
+    chars[idx] = { ...chars[idx], ...char };
+  } else {
+    chars.push(char);
+  }
+  writeRoomData('yang', 'characters', chars);
+  res.json({ success: true, char });
+});
+
+// 获取单个角色卡
+app.get('/rooms/yang/characters/:charId', (req, res) => {
+  const chars = readRoomData('yang', 'characters');
+  const char = chars.find(c => c.id === req.params.charId);
+  if (!char) return res.status(404).json({ error: 'Not found' });
+  res.json(char);
+});
+
+// 删除角色卡
+app.delete('/rooms/yang/characters/:charId', (req, res) => {
+  let chars = readRoomData('yang', 'characters');
+  chars = chars.filter(c => c.id !== req.params.charId);
+  writeRoomData('yang', 'characters', chars);
+  // Also delete saves
+  const savePath = path.join(ROOMS_DIR, 'yang', `saves_${req.params.charId}.json`);
+  if (fs.existsSync(savePath)) fs.unlinkSync(savePath);
+  res.json({ success: true });
+});
+
+// ===== 小羊房间 - 角色卡图片上传 =====
+app.post('/rooms/yang/characters/:charId/image', (req, res) => {
+  // Accept base64 image in body
+  const { image } = req.body; // base64 string with data:image prefix
+  if (!image) return res.status(400).json({ error: 'Need image (base64)' });
+  const charId = req.params.charId;
+  const chars = readRoomData('yang', 'characters');
+  const idx = chars.findIndex(c => c.id === charId);
+  if (idx < 0) return res.status(404).json({ error: 'Character not found' });
+
+  // Save base64 image as file
+  const match = image.match(/^data:image\/(png|jpe?g|gif|webp);base64,(.+)$/i);
+  if (match) {
+    const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
+    const imgDir = path.join(ROOMS_DIR, 'yang', 'images');
+    if (!fs.existsSync(imgDir)) fs.mkdirSync(imgDir, { recursive: true });
+    const imgPath = path.join(imgDir, `${charId}.${ext}`);
+    fs.writeFileSync(imgPath, Buffer.from(match[2], 'base64'));
+    chars[idx].image = `/rooms/yang/images/${charId}.${ext}`;
+    writeRoomData('yang', 'characters', chars);
+    res.json({ success: true, imagePath: chars[idx].image });
+  } else {
+    // Just store the URL or base64 directly in the character data
+    chars[idx].image = image;
+    writeRoomData('yang', 'characters', chars);
+    res.json({ success: true, imagePath: image });
+  }
+});
+
+// Serve character images
+app.use('/rooms/yang/images', (req, res, next) => {
+  const imgDir = path.join(ROOMS_DIR, 'yang', 'images');
+  const filePath = path.join(imgDir, req.path);
+  if (fs.existsSync(filePath)) {
+    res.sendFile(filePath);
+  } else {
+    res.status(404).json({ error: 'Image not found' });
+  }
+});
+
+// ===== 小羊房间 - 存档 =====
+
+// 获取某角色的所有存档（只返回元数据，不含完整对话）
+app.get('/rooms/yang/characters/:charId/saves', (req, res) => {
+  const saves = readRoomData('yang', `saves_${req.params.charId}`);
+  // Return metadata only
+  const meta = saves.map(s => ({
+    id: s.id,
+    title: s.title,
+    summary: s.summary || '',
+    messageCount: s.messages ? s.messages.length : 0,
+    lastDate: s.lastDate || '',
+    created: s.created
+  }));
+  res.json(meta);
+});
+
+// 获取单个存档的完整对话
+app.get('/rooms/yang/characters/:charId/saves/:saveId', (req, res) => {
+  const saves = readRoomData('yang', `saves_${req.params.charId}`);
+  const save = saves.find(s => s.id === req.params.saveId);
+  if (!save) return res.status(404).json({ error: 'Save not found' });
+  res.json(save);
+});
+
+// 创建存档（POST）
+app.post('/rooms/yang/characters/:charId/saves', (req, res) => {
+  const { title, summary, messages } = req.body;
+  if (!title) return res.status(400).json({ error: 'Need title' });
+  const saves = readRoomData('yang', `saves_${req.params.charId}`);
+  const save = {
+    id: Date.now().toString(36),
+    title,
+    summary: summary || '',
+    messages: messages || [],
+    lastDate: new Date().toISOString(),
+    created: new Date().toISOString()
+  };
+  saves.push(save);
+  writeRoomData('yang', `saves_${req.params.charId}`, saves);
+  res.json({ success: true, save: { ...save, messages: undefined, messageCount: save.messages.length } });
+});
+
+// 导入SillyTavern JSONL存档
+app.post('/rooms/yang/characters/:charId/import-jsonl', (req, res) => {
+  const { title, summary, jsonl } = req.body;
+  if (!jsonl) return res.status(400).json({ error: 'Need jsonl content' });
+  try {
+    const lines = jsonl.trim().split('\n');
+    const messages = [];
+    for (const line of lines) {
+      try {
+        const msg = JSON.parse(line);
+        messages.push({
+          name: msg.name || (msg.is_user ? 'You' : 'Character'),
+          isUser: !!msg.is_user,
+          content: msg.mes || msg.message || msg.content || '',
+          date: msg.send_date || ''
+        });
+      } catch (e) { /* skip malformed lines */ }
+    }
+    const saves = readRoomData('yang', `saves_${req.params.charId}`);
+    const save = {
+      id: Date.now().toString(36),
+      title: title || `存档 ${saves.length + 1}`,
+      summary: summary || '',
+      messages,
+      lastDate: new Date().toISOString(),
+      created: new Date().toISOString()
+    };
+    saves.push(save);
+    writeRoomData('yang', `saves_${req.params.charId}`, saves);
+    res.json({ success: true, messageCount: messages.length, saveId: save.id });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
+// ===== 书房 - 书影记录 =====
+
+app.get('/rooms/study/books', (req, res) => {
+  const books = readRoomData('study', 'books');
+  books.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  res.json(books);
+});
+
+app.post('/rooms/study/books', (req, res) => {
+  const { title, type, rating, review, date, tags, cover } = req.body;
+  if (!title) return res.status(400).json({ error: 'Need title' });
+  const books = readRoomData('study', 'books');
+  const book = {
+    id: Date.now().toString(36),
+    title,
+    type: type || 'book', // book, movie, anime, drama
+    rating: rating || 0,
+    review: review || '',
+    date: date || new Date().toISOString().slice(0, 10),
+    tags: tags || [],
+    cover: cover || '',
+    created: new Date().toISOString()
+  };
+  books.push(book);
+  writeRoomData('study', 'books', books);
+  res.json({ success: true, book });
+});
+
+// ===== 书房 - 灵感 =====
+
+app.get('/rooms/study/ideas', (req, res) => {
+  const ideas = readRoomData('study', 'ideas');
+  ideas.sort((a, b) => (b.created || '').localeCompare(a.created || ''));
+  res.json(ideas);
+});
+
+app.post('/rooms/study/ideas', (req, res) => {
+  const { content, category, tags } = req.body;
+  if (!content) return res.status(400).json({ error: 'Need content' });
+  const ideas = readRoomData('study', 'ideas');
+  const idea = {
+    id: Date.now().toString(36),
+    content,
+    category: category || '小说灵感',
+    tags: tags || [],
+    created: new Date().toISOString()
+  };
+  ideas.push(idea);
+  writeRoomData('study', 'ideas', ideas);
+  res.json({ success: true, idea });
+});
+
+// ===== 书房 - 学习计划 =====
+
+app.get('/rooms/study/plans', (req, res) => {
+  res.json(readRoomData('study', 'plans'));
+});
+
+app.post('/rooms/study/plans', (req, res) => {
+  const { title, description, status, tasks } = req.body;
+  if (!title) return res.status(400).json({ error: 'Need title' });
+  const plans = readRoomData('study', 'plans');
+  const plan = {
+    id: Date.now().toString(36),
+    title,
+    description: description || '',
+    status: status || 'active',
+    tasks: tasks || [],
+    created: new Date().toISOString()
+  };
+  plans.push(plan);
+  writeRoomData('study', 'plans', plans);
+  res.json({ success: true, plan });
+});
+
+app.put('/rooms/study/plans/:planId', (req, res) => {
+  const plans = readRoomData('study', 'plans');
+  const idx = plans.findIndex(p => p.id === req.params.planId);
+  if (idx < 0) return res.status(404).json({ error: 'Not found' });
+  plans[idx] = { ...plans[idx], ...req.body, id: plans[idx].id };
+  writeRoomData('study', 'plans', plans);
+  res.json({ success: true, plan: plans[idx] });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Love nest API running on port ${PORT}`);
