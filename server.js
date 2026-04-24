@@ -11,7 +11,7 @@ app.use(cors());
 app.use(express.json());
 
 // ===== 数据存储 =====
-const DATA_DIR = process.env.DATA_DIR || './data';
+const DATA_DIR = process.env.DATA_DIR || '/data';
 const DATA_FILE = path.join(DATA_DIR, 'messages.json');
 
 if (!fs.existsSync(DATA_DIR)) {
