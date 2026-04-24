@@ -8,7 +8,7 @@ const { simpleParser } = require('mailparser');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
 
 // ===== 数据存储 =====
 const DATA_DIR = process.env.DATA_DIR || '/data';
@@ -754,6 +754,187 @@ app.put('/rooms/study/plans/:planId', (req, res) => {
   plans[idx] = { ...plans[idx], ...req.body, id: plans[idx].id };
   writeRoomData('study', 'plans', plans);
   res.json({ success: true, plan: plans[idx] });
+});
+
+// ===== 书架 =====
+
+app.get('/rooms/study/library', (req, res) => {
+  const books = readRoomData('study', 'library');
+  res.json(books.map(b => {
+    const chapters = b.chapters || [];
+    const totalParas = chapters.reduce((n, c) => n + (c.paragraphs || []).length, 0);
+    return {
+      id: b.id, title: b.title, author: b.author || '', cover: b.cover || '',
+      chapterCount: chapters.length, totalParagraphs: totalParas,
+      progress: b.progress || { chapter: 0, page: 1 },
+      created: b.created
+    };
+  }));
+});
+
+app.post('/rooms/study/library', (req, res) => {
+  const { title, author, cover } = req.body;
+  if (!title) return res.status(400).json({ error: 'Need title' });
+  const books = readRoomData('study', 'library');
+  const book = {
+    id: Date.now().toString(36), title, author: author || '', cover: cover || '',
+    chapters: [], annotations: [],
+    progress: { chapter: 0, page: 1 },
+    created: new Date().toISOString()
+  };
+  books.push(book);
+  writeRoomData('study', 'library', books);
+  res.json({ success: true, id: book.id });
+});
+
+app.put('/rooms/study/library/:id', (req, res) => {
+  const books = readRoomData('study', 'library');
+  const idx = books.findIndex(b => b.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: 'Not found' });
+  ['title', 'author', 'cover'].forEach(k => { if (req.body[k] !== undefined) books[idx][k] = req.body[k]; });
+  writeRoomData('study', 'library', books);
+  res.json({ success: true });
+});
+
+app.delete('/rooms/study/library/:id', (req, res) => {
+  let books = readRoomData('study', 'library');
+  books = books.filter(b => b.id !== req.params.id);
+  writeRoomData('study', 'library', books);
+  res.json({ success: true });
+});
+
+// ===== 章节 CRUD =====
+
+// 获取章节列表（不含正文）
+app.get('/rooms/study/library/:id/chapters', (req, res) => {
+  const books = readRoomData('study', 'library');
+  const book = books.find(b => b.id === req.params.id);
+  if (!book) return res.status(404).json({ error: 'Not found' });
+  res.json((book.chapters || []).map((c, i) => ({
+    index: i, title: c.title, paragraphCount: (c.paragraphs || []).length
+  })));
+});
+
+// 追加章节
+app.post('/rooms/study/library/:id/chapters', (req, res) => {
+  const { title, content } = req.body;
+  if (!content) return res.status(400).json({ error: 'Need content' });
+  const books = readRoomData('study', 'library');
+  const idx = books.findIndex(b => b.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: 'Not found' });
+  if (!books[idx].chapters) books[idx].chapters = [];
+  const paras = content.split(/\n+/).map(s => s.trim()).filter(s => s.length > 0);
+  const chapterIdx = books[idx].chapters.length;
+  books[idx].chapters.push({
+    title: title || `第${chapterIdx + 1}章`,
+    paragraphs: paras
+  });
+  writeRoomData('study', 'library', books);
+  res.json({ success: true, chapterIndex: chapterIdx, paragraphCount: paras.length });
+});
+
+// 编辑章节标题或内容
+app.put('/rooms/study/library/:id/chapters/:ci', (req, res) => {
+  const books = readRoomData('study', 'library');
+  const bi = books.findIndex(b => b.id === req.params.id);
+  if (bi < 0) return res.status(404).json({ error: 'Not found' });
+  const ci = parseInt(req.params.ci);
+  if (!books[bi].chapters || !books[bi].chapters[ci]) return res.status(404).json({ error: 'Chapter not found' });
+  if (req.body.title !== undefined) books[bi].chapters[ci].title = req.body.title;
+  if (req.body.content !== undefined) {
+    books[bi].chapters[ci].paragraphs = req.body.content.split(/\n+/).map(s => s.trim()).filter(s => s.length > 0);
+  }
+  writeRoomData('study', 'library', books);
+  res.json({ success: true });
+});
+
+// 删除章节
+app.delete('/rooms/study/library/:id/chapters/:ci', (req, res) => {
+  const books = readRoomData('study', 'library');
+  const bi = books.findIndex(b => b.id === req.params.id);
+  if (bi < 0) return res.status(404).json({ error: 'Not found' });
+  const ci = parseInt(req.params.ci);
+  if (!books[bi].chapters || !books[bi].chapters[ci]) return res.status(404).json({ error: 'Chapter not found' });
+  books[bi].chapters.splice(ci, 1);
+  // Clean up annotations for deleted chapter
+  books[bi].annotations = (books[bi].annotations || []).filter(a => a.chapter !== ci)
+    .map(a => a.chapter > ci ? { ...a, chapter: a.chapter - 1 } : a);
+  writeRoomData('study', 'library', books);
+  res.json({ success: true });
+});
+
+// ===== 分页读取（某章某页）=====
+
+app.get('/rooms/study/library/:id/read', (req, res) => {
+  const books = readRoomData('study', 'library');
+  const book = books.find(b => b.id === req.params.id);
+  if (!book) return res.status(404).json({ error: 'Not found' });
+  const ci = parseInt(req.query.chapter) || 0;
+  const page = parseInt(req.query.page) || 1;
+  const perPage = parseInt(req.query.perPage) || 30;
+
+  const chapters = book.chapters || [];
+  if (ci < 0 || ci >= chapters.length) {
+    return res.json({ chapter: ci, page: 1, totalPages: 0, totalChapters: chapters.length, paragraphs: [], annotations: [] });
+  }
+  const ch = chapters[ci];
+  const total = ch.paragraphs ? ch.paragraphs.length : 0;
+  const totalPages = Math.ceil(total / perPage) || 1;
+  const start = (page - 1) * perPage;
+  const paragraphs = (ch.paragraphs || []).slice(start, start + perPage).map((text, i) => ({
+    index: start + i, text
+  }));
+
+  // Annotations for this chapter+page range
+  const annots = (book.annotations || []).filter(a =>
+    a.chapter === ci && a.paraIndex >= start && a.paraIndex < start + perPage
+  );
+
+  res.json({
+    chapter: ci, chapterTitle: ch.title, page, totalPages,
+    totalChapters: chapters.length, totalParagraphs: total,
+    paragraphs, annotations: annots
+  });
+});
+
+// ===== 进度 =====
+
+app.put('/rooms/study/library/:id/progress', (req, res) => {
+  const { chapter, page } = req.body;
+  const books = readRoomData('study', 'library');
+  const idx = books.findIndex(b => b.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: 'Not found' });
+  books[idx].progress = { chapter: chapter || 0, page: page || 1 };
+  writeRoomData('study', 'library', books);
+  res.json({ success: true });
+});
+
+// ===== 批注 CRUD =====
+
+app.post('/rooms/study/library/:id/annotations', (req, res) => {
+  const { chapter, paraIndex, author, content, type } = req.body;
+  if (chapter === undefined || paraIndex === undefined || !author || !content)
+    return res.status(400).json({ error: 'Need chapter, paraIndex, author, content' });
+  const books = readRoomData('study', 'library');
+  const idx = books.findIndex(b => b.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: 'Not found' });
+  if (!books[idx].annotations) books[idx].annotations = [];
+  const ann = {
+    id: Date.now().toString(36), chapter, paraIndex, author, content,
+    type: type || 'comment', created: new Date().toISOString()
+  };
+  books[idx].annotations.push(ann);
+  writeRoomData('study', 'library', books);
+  res.json({ success: true, annotation: ann });
+});
+
+app.delete('/rooms/study/library/:id/annotations/:annId', (req, res) => {
+  const books = readRoomData('study', 'library');
+  const bi = books.findIndex(b => b.id === req.params.id);
+  if (bi < 0) return res.status(404).json({ error: 'Not found' });
+  books[bi].annotations = (books[bi].annotations || []).filter(a => a.id !== req.params.annId);
+  writeRoomData('study', 'library', books);
+  res.json({ success: true });
 });
 
 const PORT = process.env.PORT || 3000;
