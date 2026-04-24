@@ -211,6 +211,99 @@ function writeRoomData(room, file, data) {
   fs.writeFileSync(path.join(dir, file + '.json'), JSON.stringify(data, null, 2));
 }
 
+// ===== Changelog =====
+const CHANGELOG_FILE = path.join(DATA_DIR, 'changelog.json');
+
+function readChangelog() {
+  try {
+    if (fs.existsSync(CHANGELOG_FILE)) {
+      return JSON.parse(fs.readFileSync(CHANGELOG_FILE, 'utf8'));
+    }
+  } catch (e) {}
+  return [];
+}
+
+function writeChangelog(log) {
+  // Keep last 200 entries
+  if (log.length > 200) log = log.slice(-200);
+  fs.writeFileSync(CHANGELOG_FILE, JSON.stringify(log, null, 2));
+}
+
+// Auto-log middleware for all room mutations (POST/PUT/DELETE)
+app.use('/rooms', (req, res, next) => {
+  if (req.method === 'GET') return next();
+
+  // Capture original json method to intercept response
+  const origJson = res.json.bind(res);
+  res.json = (body) => {
+    // Only log successful mutations
+    if (body && (body.success || body.char || body.entry || body.book || body.idea || body.comment || body.segment)) {
+      const log = readChangelog();
+      const entry = {
+        time: new Date().toISOString(),
+        method: req.method,
+        path: req.originalUrl,
+        action: guessAction(req.method, req.originalUrl),
+        detail: guessDetail(req.method, req.originalUrl, req.body, body)
+      };
+      log.push(entry);
+      writeChangelog(log);
+    }
+    return origJson(body);
+  };
+  next();
+});
+
+function guessAction(method, url) {
+  const parts = url.replace('/rooms/', '').split('/').filter(Boolean);
+  const room = parts[0]; // yang, mu, study
+  if (method === 'DELETE') return '删除';
+  if (method === 'PUT') return '编辑';
+  // POST
+  if (url.includes('/worldbook')) return '新增世界书条目';
+  if (url.includes('/archives') && url.includes('/segments') && url.includes('/comments')) return '新评论';
+  if (url.includes('/segments')) return '新增段落';
+  if (url.includes('/archives')) return '新增存档';
+  if (url.includes('/characters')) return '新增角色卡';
+  if (url.includes('/diary')) return '写日记';
+  if (url.includes('/penpals')) return '更新笔友';
+  if (url.includes('/growth')) return '新增成长记录';
+  if (url.includes('/books')) return '记录书影';
+  if (url.includes('/ideas')) return '记录灵感';
+  if (url.includes('/plans')) return '新增计划';
+  return method;
+}
+
+function guessDetail(method, url, reqBody, resBody) {
+  const name = reqBody?.name || reqBody?.title || reqBody?.keyword || reqBody?.content?.slice(0, 40) || '';
+  if (method === 'DELETE') {
+    // Extract what was deleted from URL
+    const parts = url.split('/');
+    return `ID: ${parts[parts.length - 1]}`;
+  }
+  return name ? (name.length > 50 ? name.slice(0, 50) + '…' : name) : '';
+}
+
+// GET changelog - for Claude to check on conversation start
+app.get('/changelog', (req, res) => {
+  const log = readChangelog();
+  const since = req.query.since; // ISO datetime string
+  if (since) {
+    const filtered = log.filter(e => e.time > since);
+    res.json({ total: log.length, since, entries: filtered });
+  } else {
+    // Default: last 20 entries
+    const n = parseInt(req.query.n) || 20;
+    res.json({ total: log.length, entries: log.slice(-n) });
+  }
+});
+
+// Clear changelog (optional)
+app.delete('/changelog', (req, res) => {
+  writeChangelog([]);
+  res.json({ success: true });
+});
+
 // ===== 暮的房间 - 日记 =====
 
 // 获取所有日记
