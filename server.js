@@ -33,6 +33,24 @@ function writeMessages(messages) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(messages, null, 2));
 }
 
+// ===== 邮件已读追踪 =====
+const LAST_READ_FILE = path.join(DATA_DIR, 'last_read.json');
+
+function getLastRead() {
+  try {
+    if (fs.existsSync(LAST_READ_FILE)) {
+      return JSON.parse(fs.readFileSync(LAST_READ_FILE, 'utf8'));
+    }
+  } catch (e) {}
+  return { timestamp: null, count: 0 };
+}
+
+function setLastRead(timestamp) {
+  const data = { timestamp, count: (getLastRead().count || 0) + 1, updated: new Date().toISOString() };
+  fs.writeFileSync(LAST_READ_FILE, JSON.stringify(data, null, 2));
+  return data;
+}
+
 // ===== 邮件配置 =====
 const transporter = nodemailer.createTransport({
   host: 'smtp.163.com',
@@ -143,10 +161,10 @@ app.get('/inbox', async (req, res) => {
     const fetchCount = Math.min(limit, total);
     const results = [];
 
-    // 从最新的开始取
+    // 从最新的开始取，用TOP只取头部+前100行正文（比RETR快很多）
     for (let i = total; i > total - fetchCount && i > 0; i--) {
       try {
-        const mailContent = await pop3.RETR(i);
+        const mailContent = await pop3.TOP(i, 100);
         const parsed = await simpleParser(mailContent);
         results.push({
           from: parsed.from?.text || '',
@@ -160,9 +178,65 @@ app.get('/inbox', async (req, res) => {
     }
 
     await pop3.QUIT();
-    res.json({ count: results.length, emails: results });
+    
+    // 标注哪些是新邮件
+    const lastRead = getLastRead();
+    const emailsWithStatus = results.map(e => ({
+      ...e,
+      isNew: lastRead.timestamp ? e.date > lastRead.timestamp : true
+    }));
+    const newCount = emailsWithStatus.filter(e => e.isNew).length;
+
+    res.json({ count: results.length, newCount, lastRead: lastRead.timestamp, emails: emailsWithStatus });
   } catch (e) {
     console.error('Inbox error:', e);
+    try { await pop3.QUIT(); } catch (_) {}
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 标记已读（看完信后调用）
+app.get('/inbox/mark-read', (req, res) => {
+  const timestamp = req.query.timestamp || new Date().toISOString();
+  const data = setLastRead(timestamp);
+  res.json({ success: true, ...data });
+});
+
+// 读取单封完整邮件（n=1最新，n=2次新...）
+app.get('/inbox/read/:n', async (req, res) => {
+  const n = parseInt(req.params.n) || 1;
+
+  const pop3 = new Pop3Command({
+    user: process.env.EMAIL_USER || 'themuowl@163.com',
+    password: process.env.EMAIL_PASS,
+    host: 'pop.163.com',
+    port: 995,
+    tls: true,
+    tlsOptions: { rejectUnauthorized: false }
+  });
+
+  try {
+    const list = await pop3.UIDL();
+    const total = Array.isArray(list) ? list.length : 0;
+    const idx = total - n + 1;
+    if (idx < 1 || idx > total) {
+      await pop3.QUIT();
+      return res.status(404).json({ error: `Mail #${n} not found (total: ${total})` });
+    }
+
+    const mailContent = await pop3.RETR(idx);
+    const parsed = await simpleParser(mailContent);
+    await pop3.QUIT();
+
+    res.json({
+      from: parsed.from?.text || '',
+      to: parsed.to?.text || '',
+      subject: parsed.subject || '',
+      date: parsed.date?.toISOString() || '',
+      text: (parsed.text || '').substring(0, 5000)
+    });
+  } catch (e) {
+    console.error('Read mail error:', e);
     try { await pop3.QUIT(); } catch (_) {}
     res.status(500).json({ error: e.message });
   }
