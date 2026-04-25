@@ -3,7 +3,7 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const nodemailer = require('nodemailer');
-const Imap = require('imap');
+const Pop3Command = require('node-pop3');
 const { simpleParser } = require('mailparser');
 
 const app = express();
@@ -118,69 +118,52 @@ app.get('/send-mail', async (req, res) => {
   }
 });
 
-// GET方式查收邮件（给Claude用）
+// GET方式查收邮件（给Claude用）—— POP3版本
 app.get('/inbox', async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
-  
-  const imapConfig = {
+
+  const pop3 = new Pop3Command({
     user: process.env.EMAIL_USER || 'themuowl@163.com',
     password: process.env.EMAIL_PASS,
-    host: 'imap.163.com',
-    port: 993,
+    host: 'pop.163.com',
+    port: 995,
     tls: true,
     tlsOptions: { rejectUnauthorized: false }
-  };
+  });
 
   try {
-    const emails = await new Promise((resolve, reject) => {
-      const imap = new Imap(imapConfig);
-      const results = [];
+    // 获取邮件列表
+    const list = await pop3.UIDL();
+    const total = Array.isArray(list) ? list.length : 0;
+    if (total === 0) {
+      await pop3.QUIT();
+      return res.json({ count: 0, emails: [] });
+    }
 
-      imap.once('ready', () => {
-        imap.openBox('INBOX', true, (err, box) => {
-          if (err) { reject(err); return; }
-          
-          const total = box.messages.total;
-          if (total === 0) { imap.end(); resolve([]); return; }
-          
-          const from = Math.max(1, total - limit + 1);
-          const f = imap.seq.fetch(`${from}:${total}`, {
-            bodies: '',
-            struct: true
-          });
+    const fetchCount = Math.min(limit, total);
+    const results = [];
 
-          f.on('message', (msg) => {
-            msg.on('body', (stream) => {
-              simpleParser(stream, (err, parsed) => {
-                if (err) return;
-                results.push({
-                  from: parsed.from?.text || '',
-                  subject: parsed.subject || '',
-                  date: parsed.date?.toISOString() || '',
-                  text: (parsed.text || '').substring(0, 2000)
-                });
-              });
-            });
-          });
-
-          f.once('end', () => {
-            setTimeout(() => {
-              imap.end();
-              resolve(results.reverse());
-            }, 1000);
-          });
-
-          f.once('error', reject);
+    // 从最新的开始取
+    for (let i = total; i > total - fetchCount && i > 0; i--) {
+      try {
+        const mailContent = await pop3.RETR(i);
+        const parsed = await simpleParser(mailContent);
+        results.push({
+          from: parsed.from?.text || '',
+          subject: parsed.subject || '',
+          date: parsed.date?.toISOString() || '',
+          text: (parsed.text || '').substring(0, 2000)
         });
-      });
+      } catch (parseErr) {
+        console.error(`Error parsing mail ${i}:`, parseErr.message);
+      }
+    }
 
-      imap.once('error', reject);
-      imap.connect();
-    });
-
-    res.json({ count: emails.length, emails });
+    await pop3.QUIT();
+    res.json({ count: results.length, emails: results });
   } catch (e) {
     console.error('Inbox error:', e);
+    try { await pop3.QUIT(); } catch (_) {}
     res.status(500).json({ error: e.message });
   }
 });
