@@ -312,10 +312,35 @@ app.use('/rooms', (req, res, next) => {
 });
 
 function guessAction(method, url) {
-  const parts = url.replace('/rooms/', '').split('/').filter(Boolean);
-  const room = parts[0]; // yang, mu, study
-  if (method === 'DELETE') return '删除';
-  if (method === 'PUT') return '编辑';
+  if (method === 'DELETE') {
+    if (url.includes('/penpals/') && url.includes('/logs/')) return '删除通信记录';
+    if (url.match(/\/penpals\/[^/]+$/)) return '删除笔友';
+    if (url.includes('/diary/')) return '删除日记';
+    if (url.includes('/growth/')) return '删除成长记录';
+    if (url.includes('/worldbook')) return '删除世界书条目';
+    if (url.includes('/segments') && url.includes('/comments')) return '删除评论';
+    if (url.includes('/segments')) return '删除段落';
+    if (url.includes('/archives')) return '删除存档';
+    if (url.includes('/characters')) return '删除角色卡';
+    if (url.includes('/library') && url.includes('/chapters')) return '删除章节';
+    if (url.includes('/library') && url.includes('/annotations')) return '删除批注';
+    if (url.includes('/library')) return '从书架移除';
+    return '删除';
+  }
+  if (method === 'PUT') {
+    if (url.includes('/penpals/') && url.includes('/logs/')) return '修改通信记录';
+    if (url.includes('/diary/')) return '修改日记';
+    if (url.includes('/growth/')) return '修改成长记录';
+    if (url.includes('/worldbook')) return '修改世界书条目';
+    if (url.includes('/segments')) return '修改段落';
+    if (url.includes('/archives')) return '修改存档';
+    if (url.includes('/characters')) return '修改角色卡';
+    if (url.includes('/library') && url.includes('/chapters')) return '修改章节';
+    if (url.includes('/library') && url.includes('/progress')) return '更新阅读进度';
+    if (url.includes('/library')) return '修改书籍';
+    if (url.includes('/plans')) return '更新学习计划';
+    return '编辑';
+  }
   // POST
   if (url.includes('/worldbook')) return '新增世界书条目';
   if (url.includes('/archives') && url.includes('/segments') && url.includes('/comments')) return '新评论';
@@ -329,15 +354,29 @@ function guessAction(method, url) {
   if (url.includes('/books')) return '记录书影';
   if (url.includes('/ideas')) return '记录灵感';
   if (url.includes('/plans')) return '新增计划';
+  if (url.includes('/library') && url.includes('/chapters')) return '上传章节';
+  if (url.includes('/library') && url.includes('/annotations')) return '新增批注';
+  if (url.includes('/library')) return '加入书架';
   return method;
 }
 
 function guessDetail(method, url, reqBody, resBody) {
-  const name = reqBody?.name || reqBody?.title || reqBody?.keyword || reqBody?.content?.slice(0, 40) || '';
+  const name = reqBody?.name || reqBody?.title || reqBody?.keyword
+    || (reqBody?.summary ? reqBody.summary.slice(0, 40) : '')
+    || (reqBody?.content ? reqBody.content.slice(0, 40) : '');
+
+  // For penpal-related routes, prepend penpal name from URL
+  const palMatch = url.match(/\/penpals\/([^/]+)(?:\/logs|$|\/)/);
+  if (palMatch) {
+    const palName = decodeURIComponent(palMatch[1]);
+    if (palName !== 'add') {
+      return name ? `${palName} · ${name}` : palName;
+    }
+  }
+
   if (method === 'DELETE') {
-    // Extract what was deleted from URL
-    const parts = url.split('/');
-    return `ID: ${parts[parts.length - 1]}`;
+    if (resBody?.entry?.title) return resBody.entry.title;
+    return '';
   }
   return name ? (name.length > 50 ? name.slice(0, 50) + '…' : name) : '';
 }
@@ -390,6 +429,29 @@ app.post('/rooms/mu/diary', (req, res) => {
   entries.push(entry);
   writeRoomData('mu', 'diary', entries);
   res.json({ success: true, entry });
+});
+
+// 编辑日记
+app.put('/rooms/mu/diary/:id', (req, res) => {
+  const entries = readRoomData('mu', 'diary');
+  const idx = entries.findIndex(e => e.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: 'Not found' });
+  ['date', 'content', 'mood', 'tags'].forEach(k => {
+    if (req.body[k] !== undefined) entries[idx][k] = req.body[k];
+  });
+  entries[idx].updated = new Date().toISOString();
+  writeRoomData('mu', 'diary', entries);
+  res.json({ success: true, entry: entries[idx] });
+});
+
+// 删除日记
+app.delete('/rooms/mu/diary/:id', (req, res) => {
+  const entries = readRoomData('mu', 'diary');
+  const target = entries.find(e => e.id === req.params.id);
+  const filtered = entries.filter(e => e.id !== req.params.id);
+  if (filtered.length === entries.length) return res.status(404).json({ error: 'Not found' });
+  writeRoomData('mu', 'diary', filtered);
+  res.json({ success: true, entry: target });
 });
 
 // GET方式写日记（给Claude用）
@@ -530,6 +592,39 @@ app.get('/rooms/mu/penpals/:name/logs/add', (req, res) => {
   res.json({ success: true, log });
 });
 
+// 删除笔友
+app.delete('/rooms/mu/penpals/:name', (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const pals = readRoomData('mu', 'penpals');
+  const target = pals.find(p => p.name === name);
+  if (!target) return res.status(404).json({ error: 'Penpal not found' });
+  const filtered = pals.filter(p => p.name !== name);
+  writeRoomData('mu', 'penpals', filtered);
+  res.json({ success: true, pal: target });
+});
+
+// 修改通信记录
+app.put('/rooms/mu/penpals/:name/logs/:logId', (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const pals = readRoomData('mu', 'penpals');
+  const idx = pals.findIndex(p => p.name === name);
+  if (idx < 0) return res.status(404).json({ error: 'Penpal not found' });
+  const logs = pals[idx].logs || [];
+  const li = logs.findIndex(l => l.id === req.params.logId);
+  if (li < 0) return res.status(404).json({ error: 'Log not found' });
+  ['date', 'summary'].forEach(k => {
+    if (req.body[k] !== undefined) logs[li][k] = req.body[k];
+  });
+  if (req.body.topics !== undefined) {
+    logs[li].topics = Array.isArray(req.body.topics) ? req.body.topics : (req.body.topics ? [req.body.topics] : []);
+  }
+  logs[li].updated = new Date().toISOString();
+  pals[idx].logs = logs;
+  pals[idx].updated = new Date().toISOString();
+  writeRoomData('mu', 'penpals', pals);
+  res.json({ success: true, log: logs[li] });
+});
+
 // 删除通信记录
 app.delete('/rooms/mu/penpals/:name/logs/:logId', (req, res) => {
   const name = decodeURIComponent(req.params.name);
@@ -568,6 +663,29 @@ app.post('/rooms/mu/growth', (req, res) => {
   items.push(item);
   writeRoomData('mu', 'growth', items);
   res.json({ success: true, item });
+});
+
+// 修改成长记录
+app.put('/rooms/mu/growth/:id', (req, res) => {
+  const items = readRoomData('mu', 'growth');
+  const idx = items.findIndex(i => i.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: 'Not found' });
+  ['date', 'title', 'description'].forEach(k => {
+    if (req.body[k] !== undefined) items[idx][k] = req.body[k];
+  });
+  items[idx].updated = new Date().toISOString();
+  writeRoomData('mu', 'growth', items);
+  res.json({ success: true, item: items[idx] });
+});
+
+// 删除成长记录
+app.delete('/rooms/mu/growth/:id', (req, res) => {
+  const items = readRoomData('mu', 'growth');
+  const target = items.find(i => i.id === req.params.id);
+  const filtered = items.filter(i => i.id !== req.params.id);
+  if (filtered.length === items.length) return res.status(404).json({ error: 'Not found' });
+  writeRoomData('mu', 'growth', filtered);
+  res.json({ success: true, item: target });
 });
 
 // GET方式添加成长记录（给Claude用）
