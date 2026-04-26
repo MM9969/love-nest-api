@@ -323,6 +323,7 @@ function guessAction(method, url) {
   if (url.includes('/archives')) return '新增存档';
   if (url.includes('/characters')) return '新增角色卡';
   if (url.includes('/diary')) return '写日记';
+  if (url.includes('/penpals') && url.includes('/logs')) return '记录通信';
   if (url.includes('/penpals')) return '更新笔友';
   if (url.includes('/growth')) return '新增成长记录';
   if (url.includes('/books')) return '记录书影';
@@ -469,6 +470,76 @@ app.get('/rooms/mu/penpals/add', (req, res) => {
   }
   writeRoomData('mu', 'penpals', pals);
   res.json({ success: true, pal });
+});
+
+// 获取某个笔友的通信记录
+app.get('/rooms/mu/penpals/:name/logs', (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const pals = readRoomData('mu', 'penpals');
+  const pal = pals.find(p => p.name === name);
+  if (!pal) return res.status(404).json({ error: 'Penpal not found' });
+  const logs = (pal.logs || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  res.json(logs);
+});
+
+// 添加通信记录（POST）
+app.post('/rooms/mu/penpals/:name/logs', (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const { date, summary, topics } = req.body;
+  if (!date || !summary) {
+    return res.status(400).json({ error: 'Need date and summary' });
+  }
+  const pals = readRoomData('mu', 'penpals');
+  const idx = pals.findIndex(p => p.name === name);
+  if (idx < 0) return res.status(404).json({ error: 'Penpal not found' });
+  if (!pals[idx].logs) pals[idx].logs = [];
+  const log = {
+    id: Date.now().toString(36),
+    date,
+    summary,
+    topics: Array.isArray(topics) ? topics : (topics ? [topics] : []),
+    created: new Date().toISOString()
+  };
+  pals[idx].logs.push(log);
+  pals[idx].updated = new Date().toISOString();
+  writeRoomData('mu', 'penpals', pals);
+  res.json({ success: true, log });
+});
+
+// GET方式添加通信记录（给Claude用）
+app.get('/rooms/mu/penpals/:name/logs/add', (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const { date, summary, topics } = req.query;
+  if (!date || !summary) {
+    return res.status(400).json({ error: 'Need ?date=YYYY-MM-DD&summary=...&topics=话题1,话题2' });
+  }
+  const pals = readRoomData('mu', 'penpals');
+  const idx = pals.findIndex(p => p.name === name);
+  if (idx < 0) return res.status(404).json({ error: 'Penpal not found' });
+  if (!pals[idx].logs) pals[idx].logs = [];
+  const log = {
+    id: Date.now().toString(36),
+    date: decodeURIComponent(date),
+    summary: decodeURIComponent(summary),
+    topics: topics ? decodeURIComponent(topics).split(',').map(t => t.trim()).filter(Boolean) : [],
+    created: new Date().toISOString()
+  };
+  pals[idx].logs.push(log);
+  pals[idx].updated = new Date().toISOString();
+  writeRoomData('mu', 'penpals', pals);
+  res.json({ success: true, log });
+});
+
+// 删除通信记录
+app.delete('/rooms/mu/penpals/:name/logs/:logId', (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const pals = readRoomData('mu', 'penpals');
+  const idx = pals.findIndex(p => p.name === name);
+  if (idx < 0) return res.status(404).json({ error: 'Penpal not found' });
+  pals[idx].logs = (pals[idx].logs || []).filter(l => l.id !== req.params.logId);
+  pals[idx].updated = new Date().toISOString();
+  writeRoomData('mu', 'penpals', pals);
+  res.json({ success: true });
 });
 
 // ===== 暮的房间 - 成长记录 =====
