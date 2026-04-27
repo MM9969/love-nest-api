@@ -5,14 +5,6 @@ module.exports = function (app, port) {
 
   // ── /mcp 专属 CORS：完全用 wildcard，匹配 FastMCP 默认行为 ──
   app.use('/mcp', (req, res, next) => {
-    // 临时调试日志 —— 看 Claude 到底有没有打到我们
-    console.log(
-      `[MCP ${new Date().toISOString()}] ${req.method} ${req.originalUrl}`,
-      'origin=', req.headers.origin || '-',
-      'ua=', (req.headers['user-agent'] || '-').slice(0, 80),
-      'accept=', req.headers.accept || '-',
-      'session=', req.headers['mcp-session-id'] || '-',
-    );
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.set('Access-Control-Allow-Headers', '*');
