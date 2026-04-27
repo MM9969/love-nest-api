@@ -1,7 +1,7 @@
 {
   "name": "love-nest-api",
   "version": "1.0.0",
-  "description": "Love nest message API",
+  "description": "精神小窝 API",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,7 +10,7 @@
     "cors": "^2.8.5",
     "express": "^4.18.2",
     "mailparser": "^3.6.5",
-    "node-pop3": "^0.9.0",
-    "nodemailer": "^6.9.8",
+    "node-pop3": "^0.8.0",
+    "nodemailer": "^6.9.7"
   }
 }
