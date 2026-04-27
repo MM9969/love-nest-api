@@ -3,13 +3,12 @@ const crypto = require('crypto');
 
 module.exports = function (app, port) {
 
-  // ── /mcp 专属 CORS：暴露 Mcp-Session-Id，否则浏览器 JS 读不到，
-  //   Claude.ai connector 拿不到 session 就会判定连接失败 ──
+  // ── /mcp 专属 CORS：完全用 wildcard，匹配 FastMCP 默认行为 ──
   app.use('/mcp', (req, res, next) => {
-    res.set('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-    res.set('Access-Control-Allow-Headers', 'Content-Type, Accept, Mcp-Session-Id, Last-Event-ID');
-    res.set('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+    res.set('Access-Control-Allow-Headers', '*');
+    res.set('Access-Control-Expose-Headers', '*');
     res.set('Access-Control-Max-Age', '600');
     if (req.method === 'OPTIONS') return res.status(204).end();
     next();
