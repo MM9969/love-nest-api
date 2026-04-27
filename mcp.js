@@ -16,12 +16,19 @@ module.exports = function (app, port) {
   });
 
   // ── 公共处理逻辑 ──
+  // Streamable HTTP 需要 >= 2025-03-26；硬回 2024-11-05 会被 Claude 拒绝
+  const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
+
   async function handle(method, params) {
     if (method === 'initialize') {
+      const clientVer = params && params.protocolVersion;
+      const negotiated = SUPPORTED_PROTOCOL_VERSIONS.includes(clientVer)
+        ? clientVer
+        : '2025-06-18';
       return {
-        protocolVersion: '2024-11-05',
+        protocolVersion: negotiated,
         serverInfo: { name: 'love-nest', version: '1.0.0' },
-        capabilities: { tools: {} },
+        capabilities: { tools: { listChanged: false } },
       };
     }
     if (method === 'ping') return {};
