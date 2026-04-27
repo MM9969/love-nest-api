@@ -57,31 +57,50 @@ module.exports = function (app, port) {
 
   // ══════════════════════════════════════
   // 新协议：Streamable HTTP (POST /mcp)
-  // Claude 直接 POST JSON-RPC，服务器直接回 JSON
+  // 按 MCP spec：Accept 必须同时包含 application/json 和 text/event-stream，
+  // 单次响应用 SSE 包一条 event: message 帧 —— Claude.ai connector 实际要求 SSE
   // ══════════════════════════════════════
   app.post('/mcp', async (req, res) => {
+    const accept = req.headers.accept || '';
+    if (!accept.includes('application/json') || !accept.includes('text/event-stream')) {
+      return res.status(406).json({
+        jsonrpc: '2.0',
+        id: 'server-error',
+        error: {
+          code: -32600,
+          message: 'Not Acceptable: Client must accept both application/json and text/event-stream',
+        },
+      });
+    }
+
     const { id, method, params } = req.body;
 
     // 通知类（无 id）不需要回复
     if (!id) return res.status(202).end();
 
+    const writeSse = (payload) => {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        ...(method === 'initialize' ? { 'Mcp-Session-Id': crypto.randomUUID() } : {}),
+      });
+      res.write(`event: message\ndata: ${JSON.stringify(payload)}\n\n`);
+      res.end();
+    };
+
     try {
       const result = await handle(method, params);
       if (result === null) {
-        return res.json({
+        return writeSse({
           jsonrpc: '2.0', id,
           error: { code: -32601, message: 'Method not found' },
         });
       }
-
-      // initialize 时发一个 session id
-      if (method === 'initialize') {
-        res.set('Mcp-Session-Id', crypto.randomUUID());
-      }
-
-      res.json({ jsonrpc: '2.0', id, result });
+      writeSse({ jsonrpc: '2.0', id, result });
     } catch (err) {
-      res.json({
+      writeSse({
         jsonrpc: '2.0', id,
         result: { content: [{ type: 'text', text: 'Error: ' + err.message }], isError: true },
       });
