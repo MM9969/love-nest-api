@@ -1,7 +1,19 @@
-// MCP 端点 ── 零依赖，同时支持 Streamable HTTP (新) + SSE (旧)
+// MCP 端点 ── 零依赖，Streamable HTTP 协议
 const crypto = require('crypto');
 
 module.exports = function (app, port) {
+
+  // ── /mcp 专属 CORS：暴露 Mcp-Session-Id，否则浏览器 JS 读不到，
+  //   Claude.ai connector 拿不到 session 就会判定连接失败 ──
+  app.use('/mcp', (req, res, next) => {
+    res.set('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.set('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.set('Access-Control-Allow-Headers', 'Content-Type, Accept, Mcp-Session-Id, Last-Event-ID');
+    res.set('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+    res.set('Access-Control-Max-Age', '600');
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    next();
+  });
 
   // ── 公共处理逻辑 ──
   async function handle(method, params) {
@@ -110,45 +122,14 @@ module.exports = function (app, port) {
   // session 终止
   app.delete('/mcp', (req, res) => res.status(200).end());
 
-  // ══════════════════════════════════════
-  // 旧协议：SSE Transport (GET /mcp)
-  // 保留向后兼容
-  // ══════════════════════════════════════
-  const sessions = {};
-
+  // GET /mcp 用于服务端→客户端通知流；当前不主动推送，按 spec 返回 405
   app.get('/mcp', (req, res) => {
-    const sid = crypto.randomUUID();
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
+    res.status(405).json({
+      jsonrpc: '2.0',
+      id: 'server-error',
+      error: { code: -32000, message: 'Method Not Allowed' },
     });
-    res.write(`event: endpoint\ndata: /mcp/message?sessionId=${sid}\n\n`);
-    sessions[sid] = res;
-    req.on('close', () => delete sessions[sid]);
   });
 
-  app.post('/mcp/message', async (req, res) => {
-    const sse = sessions[req.query.sessionId];
-    if (!sse) return res.status(400).json({ error: 'Invalid session' });
-
-    const { id, method, params } = req.body;
-    if (!id) return res.status(202).end();
-
-    try {
-      const result = await handle(method, params);
-      const response = result === null
-        ? { jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found' } }
-        : { jsonrpc: '2.0', id, result };
-      sse.write(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
-    } catch (err) {
-      sse.write(`event: message\ndata: ${JSON.stringify({
-        jsonrpc: '2.0', id,
-        result: { content: [{ type: 'text', text: 'Error: ' + err.message }], isError: true },
-      })}\n\n`);
-    }
-    res.status(202).end();
-  });
-
-  console.log('MCP endpoint ready at /mcp (Streamable HTTP + SSE)');
+  console.log('MCP endpoint ready at /mcp (Streamable HTTP)');
 };
