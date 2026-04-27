@@ -1184,6 +1184,7 @@ app.delete('/rooms/study/library/:id/annotations/:annId', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+require('./mcp')(app, PORT); 
 app.listen(PORT, () => {
   console.log(`Love nest API running on port ${PORT}`);
 });
