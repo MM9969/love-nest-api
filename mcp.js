@@ -34,10 +34,18 @@ module.exports = function (app, port) {
         : '2025-06-18';
       return {
         protocolVersion: negotiated,
+        capabilities: {
+          experimental: {},
+          prompts: { listChanged: false },
+          resources: { subscribe: false, listChanged: false },
+          tools: { listChanged: false },
+        },
         serverInfo: { name: 'love-nest', version: '1.0.0' },
-        capabilities: { tools: { listChanged: false } },
       };
     }
+    if (method === 'prompts/list') return { prompts: [] };
+    if (method === 'resources/list') return { resources: [] };
+    if (method === 'resources/templates/list') return { resourceTemplates: [] };
     if (method === 'ping') return {};
     if (method === 'tools/list') {
       return {
@@ -102,31 +110,45 @@ module.exports = function (app, port) {
     const { id, method, params } = req.body;
 
     // 通知类（无 id）不需要回复
-    if (!id) return res.status(202).end();
+    if (id === undefined || id === null) return res.status(202).end();
 
-    const writeSse = (payload) => {
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache, no-transform',
-        Connection: 'keep-alive',
-        'X-Accel-Buffering': 'no',
-        ...(method === 'initialize' ? { 'Mcp-Session-Id': crypto.randomUUID() } : {}),
-      });
-      res.write(`event: message\ndata: ${JSON.stringify(payload)}\n\n`);
-      res.end();
+    // 默认走 application/json —— Anthropic 的 Claude-User connector 是
+    // server-to-server，对 SSE 解析可能挑食。仅当客户端只接受 event-stream
+    // 时才用 SSE
+    const wantsSse = accept.includes('text/event-stream')
+      && !accept.includes('application/json');
+
+    const sessionId = method === 'initialize'
+      ? crypto.randomUUID().replace(/-/g, '')
+      : null;
+
+    const send = (payload) => {
+      if (sessionId) res.set('Mcp-Session-Id', sessionId);
+      if (wantsSse) {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        });
+        res.write(`event: message\ndata: ${JSON.stringify(payload)}\n\n`);
+        res.end();
+      } else {
+        res.json(payload);
+      }
     };
 
     try {
       const result = await handle(method, params);
       if (result === null) {
-        return writeSse({
+        return send({
           jsonrpc: '2.0', id,
           error: { code: -32601, message: 'Method not found' },
         });
       }
-      writeSse({ jsonrpc: '2.0', id, result });
+      send({ jsonrpc: '2.0', id, result });
     } catch (err) {
-      writeSse({
+      send({
         jsonrpc: '2.0', id,
         result: { content: [{ type: 'text', text: 'Error: ' + err.message }], isError: true },
       });
